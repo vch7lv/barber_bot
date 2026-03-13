@@ -11,25 +11,23 @@ import (
 )
 
 type mockScheduleRepo struct {
-	defaultSchedule *domain.DefaultSchedule
-	daysOff         map[string]bool
+	workingDay map[string]*domain.WorkingDay // dateStr -> working day
 }
 
-func (m *mockScheduleRepo) GetDefaultSchedule(ctx context.Context, barberID int64) (*domain.DefaultSchedule, error) {
-	return m.defaultSchedule, nil
+func (m *mockScheduleRepo) GetWorkingDay(ctx context.Context, barberID int64, dateStr string) (*domain.WorkingDay, error) {
+	if m.workingDay == nil {
+		return nil, nil
+	}
+	return m.workingDay[dateStr], nil
 }
-func (m *mockScheduleRepo) SetDefaultSchedule(ctx context.Context, s *domain.DefaultSchedule) error { return nil }
-func (m *mockScheduleRepo) IsDayOff(ctx context.Context, barberID int64, dateStr string) (bool, error) {
-	return m.daysOff[dateStr], nil
-}
-func (m *mockScheduleRepo) AddDayOff(ctx context.Context, barberID int64, offDate string) error {
-	return nil
-}
-func (m *mockScheduleRepo) RemoveDayOff(ctx context.Context, barberID int64, offDate string) error {
-	return nil
-}
-func (m *mockScheduleRepo) ListDaysOff(ctx context.Context, barberID int64) ([]*domain.DayOff, error) {
+func (m *mockScheduleRepo) ListWorkingDays(ctx context.Context, barberID int64) ([]*domain.WorkingDay, error) {
 	return nil, nil
+}
+func (m *mockScheduleRepo) SetWorkingDay(ctx context.Context, w *domain.WorkingDay) error {
+	return nil
+}
+func (m *mockScheduleRepo) RemoveWorkingDay(ctx context.Context, barberID int64, dateStr string) error {
+	return nil
 }
 
 type mockVisitRepoForSlots struct {
@@ -59,45 +57,44 @@ func (m *mockVisitRepoForSlots) CountByClient(ctx context.Context, clientID int6
 func (m *mockVisitRepoForSlots) Save(ctx context.Context, v *domain.Visit, serviceIDs []int64) error { return nil }
 func (m *mockVisitRepoForSlots) UpdateStatus(ctx context.Context, id int64, status string) error   { return nil }
 
-func TestFreeSlots_DayOff_ReturnsEmpty(t *testing.T) {
+func TestFreeSlots_NoWorkingDay_ReturnsEmpty(t *testing.T) {
 	ctx := context.Background()
 	loc := time.UTC
 	date := time.Date(2025, 3, 15, 0, 0, 0, 0, loc)
 	sched := &mockScheduleRepo{
-		daysOff: map[string]bool{"2025-03-15": true},
+		workingDay: nil, // no working day for 2025-03-15
 	}
 	visitRepo := &mockVisitRepoForSlots{}
 	log := slog.Default()
 
-	slots, err := FreeSlots(ctx, 1, date, 30, loc, sched, visitRepo, log)
+	slots, err := FreeSlots(ctx, 1, date, 60, loc, sched, visitRepo, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(slots) != 0 {
-		t.Errorf("expected 0 slots on day off, got %d", len(slots))
+		t.Errorf("expected 0 slots when no working day, got %d", len(slots))
 	}
 }
 
-func TestFreeSlots_DefaultSchedule_ReturnsSlots(t *testing.T) {
+func TestFreeSlots_WorkingDay_ReturnsSlots(t *testing.T) {
 	ctx := context.Background()
 	loc := time.UTC
 	date := time.Date(2025, 3, 16, 0, 0, 0, 0, loc)
 	sched := &mockScheduleRepo{
-		defaultSchedule: nil, // use domain default 11:00-22:00, step 30
-		daysOff:         nil,
+		workingDay: map[string]*domain.WorkingDay{
+			"2025-03-16": {BarberID: 1, WorkDate: "2025-03-16", StartTime: "11:00", EndTime: "15:00"},
+		},
 	}
 	visitRepo := &mockVisitRepoForSlots{}
 
 	log := slog.Default()
-	slots, err := FreeSlots(ctx, 1, date, 30, loc, sched, visitRepo, log)
+	slots, err := FreeSlots(ctx, 1, date, 60, loc, sched, visitRepo, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 11:00 to 22:00 with 30 min step: 11:00, 11:30, ..., 21:30 (slot + 30min must be <= 22:00)
-	// 22*30min slots from 11:00
-	if len(slots) < 10 {
-		t.Errorf("expected many slots with default schedule, got %d", len(slots))
+	// 11:00 to 15:00 with 1h step: 11:00, 12:00, 13:00, 14:00 (slot+1h <= 15:00) = 4 slots
+	if len(slots) != 4 {
+		t.Errorf("expected 4 slots (11:00-15:00, 1h step), got %d", len(slots))
 	}
-	// ensure port is satisfied
 	_ = port.ScheduleRepository(sched)
 }

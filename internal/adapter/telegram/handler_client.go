@@ -248,12 +248,12 @@ func (b *Bot) sendBookingDates(ctx context.Context, chatID int64, messageID int,
 	for i := 0; i < 14; i++ {
 		d := now.AddDate(0, 0, i)
 		dateStr := d.Format("2006-01-02")
-		off, err := b.scheduleRepo.IsDayOff(ctx, b.firstBarberID, dateStr)
+		wd, err := b.scheduleRepo.GetWorkingDay(ctx, b.firstBarberID, dateStr)
 		if err != nil {
-			b.log.Error("sendBookingDates IsDayOff", "err", err, "date", dateStr)
+			b.log.Error("sendBookingDates GetWorkingDay", "err", err, "date", dateStr)
 			continue
 		}
-		if off {
+		if wd == nil {
 			continue
 		}
 		label := d.Format("02.01")
@@ -299,13 +299,13 @@ func (b *Bot) sendBookingSlots(ctx context.Context, chatID int64, messageID int,
 			}
 		}
 	}
-	durationMin := domain.VisitDurationMinutes(durServices)
-	if durationMin == 0 {
+	if len(durServices) == 0 {
 		_ = b.editOrSend(chatID, messageID, "Ошибка: услуги не найдены.")
 		return b.sendMainMenu(chatID)
 	}
-
-	slots, err := usecase.FreeSlots(ctx, b.firstBarberID, date, durationMin, b.cfg.TZ, b.scheduleRepo, b.visitRepo, b.log)
+	// Разрыв между записями всегда 1 час; длительность услуг не влияет на сетку слотов.
+	const slotDurationMin = 60
+	slots, err := usecase.FreeSlots(ctx, b.firstBarberID, date, slotDurationMin, b.cfg.TZ, b.scheduleRepo, b.visitRepo, b.log)
 	if err != nil {
 		b.log.Error("free slots", "err", err)
 		_ = b.editOrSend(chatID, messageID, "Запись не удалась. Не удалось загрузить слоты. Попробуйте позже.")

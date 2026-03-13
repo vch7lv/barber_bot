@@ -162,47 +162,40 @@ func (b *Bot) handleBarberStateStep(ctx context.Context, chatID int64, barberID 
 			priceCents, _ = strconv.Atoi(parts[1])
 		}
 		return b.barberAddService(ctx, chatID, name, priceCents, dur)
-	case "schedule_edit":
-		b.barberState.Clear(chatID)
-		parts := strings.SplitN(strings.TrimSpace(text), " ", 3)
-		if len(parts) < 3 {
-			_ = b.SendMessage(chatID, "Неверный формат. Пример: 11:00 22:00 30. Начните заново из График.")
-			return b.sendBarberMenu(chatID)
-		}
-		return b.barberSaveDefaultSchedule(ctx, chatID, barberID, strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]))
-	case "schedule_off_add":
+	case "schedule_work_add":
 		b.barberState.Clear(chatID)
 		dateStr := strings.TrimSpace(text)
 		if _, err := time.Parse("2006-01-02", dateStr); err != nil {
 			_ = b.SendMessage(chatID, "Неверный формат даты. Введите ГГГГ-ММ-ДД. Начните заново из График.")
 			return b.sendBarberMenu(chatID)
 		}
-		return b.barberAddDayOff(ctx, chatID, barberID, dateStr)
-	case "schedule_custom_add":
+		b.barberState.Set(chatID, "schedule_work_time", dateStr)
+		return b.SendMessage(chatID, "Введите время начала и окончания (МСК). Например: 11:00 22:00. Между слотами 1 час. Назад — отмена.")
+	case "schedule_work_time":
 		b.barberState.Clear(chatID)
-		dateStr := strings.TrimSpace(text)
-		if _, err := time.Parse("2006-01-02", dateStr); err != nil {
-			_ = b.SendMessage(chatID, "Неверный формат даты. Введите ГГГГ-ММ-ДД. Начните заново из График.")
-			return b.sendBarberMenu(chatID)
-		}
-		b.barberState.Set(chatID, "schedule_custom_time", dateStr)
-		return b.SendMessage(chatID, "Введите время начала, окончания и шаг слота (мин). Например: 09:00 18:00 30. Назад — отмена.")
-	case "schedule_custom_time":
-		b.barberState.Clear(chatID)
-		parts := strings.SplitN(strings.TrimSpace(text), " ", 3)
-		if len(parts) < 3 {
-			_ = b.SendMessage(chatID, "Неверный формат. Пример: 09:00 18:00 30. Начните заново из График.")
-			return b.sendBarberMenu(chatID)
-		}
-		step, err := strconv.Atoi(strings.TrimSpace(parts[2]))
-		if err != nil || step <= 0 {
-			_ = b.SendMessage(chatID, "Шаг слота должен быть положительным числом (минуты). Начните заново из График.")
+		parts := strings.SplitN(strings.TrimSpace(text), " ", 2)
+		if len(parts) < 2 {
+			_ = b.SendMessage(chatID, "Неверный формат. Пример: 11:00 22:00. Начните заново из График.")
 			return b.sendBarberMenu(chatID)
 		}
 		dateStr := st.Data
-		o := &domain.ScheduleOverride{BarberID: barberID, WorkDate: dateStr, StartTime: strings.TrimSpace(parts[0]), EndTime: strings.TrimSpace(parts[1]), SlotStepMin: step}
-		if err := b.scheduleRepo.SetScheduleOverride(ctx, o); err != nil {
-			_ = b.SendMessage(chatID, "Ошибка сохранения измененного графика.")
+		w := &domain.WorkingDay{BarberID: barberID, WorkDate: dateStr, StartTime: strings.TrimSpace(parts[0]), EndTime: strings.TrimSpace(parts[1])}
+		if err := b.scheduleRepo.SetWorkingDay(ctx, w); err != nil {
+			_ = b.SendMessage(chatID, "Ошибка сохранения.")
+			return b.sendBarberMenu(chatID)
+		}
+		return b.barberSchedule(ctx, chatID, barberID)
+	case "schedule_work_edit":
+		b.barberState.Clear(chatID)
+		parts := strings.SplitN(strings.TrimSpace(text), " ", 2)
+		if len(parts) < 2 {
+			_ = b.SendMessage(chatID, "Неверный формат. Пример: 11:00 22:00. Начните заново из График.")
+			return b.sendBarberMenu(chatID)
+		}
+		dateStr := st.Data
+		w := &domain.WorkingDay{BarberID: barberID, WorkDate: dateStr, StartTime: strings.TrimSpace(parts[0]), EndTime: strings.TrimSpace(parts[1])}
+		if err := b.scheduleRepo.SetWorkingDay(ctx, w); err != nil {
+			_ = b.SendMessage(chatID, "Ошибка сохранения.")
 			return b.sendBarberMenu(chatID)
 		}
 		return b.barberSchedule(ctx, chatID, barberID)
@@ -333,61 +326,33 @@ func (b *Bot) barberPriceList(ctx context.Context, chatID int64, barberID int64)
 	return err
 }
 
-// barberScheduleContent собирает текст и клавиатуру экрана «График». Нужно для отправки и для редактирования сообщения.
+// barberScheduleContent собирает текст и клавиатуру экрана «График» (только рабочие дни, между слотами 1 час).
 func (b *Bot) barberScheduleContent(ctx context.Context, barberID int64) (text string, markup tgbotapi.InlineKeyboardMarkup, err error) {
-	def, err := b.scheduleRepo.GetDefaultSchedule(ctx, barberID)
-	if err != nil {
-		return "", tgbotapi.InlineKeyboardMarkup{}, err
-	}
-	startStr := domain.DefaultScheduleStart
-	endStr := domain.DefaultScheduleEnd
-	stepMin := domain.DefaultScheduleStepMin
-	if def != nil {
-		startStr, endStr = def.StartTime, def.EndTime
-		stepMin = def.SlotStepMin
-	}
-	line := fmt.Sprintf("Рабочее время по умолчанию: %s–%s, шаг %d мин (МСК).", startStr, endStr, stepMin)
-
-	daysOff, err := b.scheduleRepo.ListDaysOff(ctx, barberID)
-	if err != nil {
-		return "", tgbotapi.InlineKeyboardMarkup{}, err
-	}
-	overrides, err := b.scheduleRepo.ListScheduleOverrides(ctx, barberID)
+	list, err := b.scheduleRepo.ListWorkingDays(ctx, barberID)
 	if err != nil {
 		return "", tgbotapi.InlineKeyboardMarkup{}, err
 	}
 	var lines []string
-	lines = append(lines, line)
-	if len(daysOff) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, "Выходные дни:")
-		for _, d := range daysOff {
-			lines = append(lines, "  • "+d.OffDate)
-		}
-	}
-	if len(overrides) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, "Дни с изменненым графиком:")
-		for _, o := range overrides {
-			lines = append(lines, fmt.Sprintf("  • Измененный график %s: %s–%s, шаг %d мин", o.WorkDate, o.StartTime, o.EndTime, o.SlotStepMin))
+	lines = append(lines, "Рабочие дни (между слотами 1 час, МСК):")
+	if len(list) == 0 {
+		lines = append(lines, "  Нет добавленных дней.")
+	} else {
+		for _, w := range list {
+			lines = append(lines, fmt.Sprintf("  • %s: %s–%s", w.WorkDate, w.StartTime, w.EndTime))
 		}
 	}
 
 	var rows [][]tgbotapi.InlineKeyboardButton
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Изменить время", "b_sched_edit")))
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Добавить выходной", "b_sched_off_add")))
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Добавить измененный график", "b_sched_custom_add")))
-	for _, d := range daysOff {
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Добавить рабочий день", "b_sched_work_add")))
+	for _, w := range list {
+		d, _ := time.Parse("2006-01-02", w.WorkDate)
+		short := d.Format("02.01")
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Удалить выходной "+d.OffDate, "b_sched_off_del:"+d.OffDate),
+			tgbotapi.NewInlineKeyboardButtonData("Изм. "+short, "b_sched_work_edit:"+w.WorkDate),
+			tgbotapi.NewInlineKeyboardButtonData("Удал. "+short, "b_sched_work_del:"+w.WorkDate),
 		))
 	}
-	for _, o := range overrides {
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Удалить измененный график "+o.WorkDate, "b_sched_custom_del:"+o.WorkDate),
-		))
-	}
-	text = "Расписание (по датам, МСК):\n\n" + strings.Join(lines, "\n")
+	text = "График (рабочие дни):\n\n" + strings.Join(lines, "\n")
 	markup = tgbotapi.NewInlineKeyboardMarkup(rows...)
 	return text, markup, nil
 }
@@ -448,38 +413,44 @@ func (b *Bot) barberAddress(ctx context.Context, chatID int64, barberID int64) e
 	return err
 }
 
-func (b *Bot) barberSaveDefaultSchedule(ctx context.Context, chatID int64, barberID int64, startTime, endTime, stepStr string) error {
-	step, err := strconv.Atoi(stepStr)
-	if err != nil || step <= 0 {
-		_ = b.SendMessage(chatID, "Шаг слота должен быть положительным числом (минуты).")
-		return b.sendBarberMenu(chatID)
-	}
-	s := &domain.DefaultSchedule{BarberID: barberID, StartTime: startTime, EndTime: endTime, SlotStepMin: step}
-	if err := b.scheduleRepo.SetDefaultSchedule(ctx, s); err != nil {
-		_ = b.SendMessage(chatID, "Ошибка сохранения расписания.")
-		return b.sendBarberMenu(chatID)
-	}
-	return b.barberSchedule(ctx, chatID, barberID)
-}
-
-func (b *Bot) barberAddDayOff(ctx context.Context, chatID int64, barberID int64, offDate string) error {
-	if err := b.scheduleRepo.AddDayOff(ctx, barberID, offDate); err != nil {
-		_ = b.SendMessage(chatID, "Ошибка добавления выходного.")
-		return b.sendBarberMenu(chatID)
-	}
-	return b.barberSchedule(ctx, chatID, barberID)
-}
-
 func (b *Bot) barberVisitsPeriod(ctx context.Context, chatID int64, barberID int64) error {
-	msg := tgbotapi.NewMessage(chatID, "Выберите период записей:")
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("День", "b_visits:day"),
-			tgbotapi.NewInlineKeyboardButtonData("Неделя", "b_visits:week"),
-			tgbotapi.NewInlineKeyboardButtonData("Месяц", "b_visits:month"),
-		),
-	)
-	_, err := b.api.Send(msg)
+	workingDays, err := b.scheduleRepo.ListWorkingDays(ctx, barberID)
+	if err != nil {
+		_ = b.SendMessage(chatID, "Ошибка загрузки графика.")
+		return b.sendBarberMenu(chatID)
+	}
+	loc := b.cfg.TZ
+	now := time.Now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	fromCut := today.AddDate(0, 0, -7)
+	toCut := today.AddDate(0, 0, 30)
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, w := range workingDays {
+		d, err := time.ParseInLocation("2006-01-02", w.WorkDate, loc)
+		if err != nil {
+			continue
+		}
+		dayStart := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
+		if dayStart.Before(fromCut) || !dayStart.Before(toCut) {
+			continue
+		}
+		label := d.Format("02.01")
+		if dayStart.Equal(today) {
+			label = "Сегодня " + label
+		} else if dayStart.Equal(today.AddDate(0, 0, 1)) {
+			label = "Завтра " + label
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, "b_visits:"+w.WorkDate),
+		))
+	}
+	if len(rows) == 0 {
+		_ = b.SendMessage(chatID, "Нет рабочих дней в ближайшие 30 дней. Добавьте дни в График.")
+		return b.sendBarberMenu(chatID)
+	}
+	msg := tgbotapi.NewMessage(chatID, "Выберите рабочий день:")
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	_, err = b.api.Send(msg)
 	return err
 }
 
@@ -583,33 +554,22 @@ func (b *Bot) handleBarberCallback(ctx context.Context, chatID int64, barberID i
 		b.barberState.Set(chatID, "edit_svc_name", idStr)
 		return b.SendMessage(chatID, fmt.Sprintf("Текущее название: %s. Введите новое название или «-» чтобы оставить:", svc.Name))
 	}
-	if data == "b_sched_edit" {
-		b.barberState.Set(chatID, "schedule_edit", "")
-		return b.SendMessage(chatID, "Введите время начала, окончания и шаг слота (мин). Например: 11:00 22:00 30. Назад — отмена.")
+	if data == "b_sched_work_add" {
+		b.barberState.Set(chatID, "schedule_work_add", "")
+		return b.SendMessage(chatID, "Введите дату рабочего дня (ГГГГ-ММ-ДД, например 2025-03-15). Назад — отмена.")
 	}
-	if data == "b_sched_off_add" {
-		b.barberState.Set(chatID, "schedule_off_add", "")
-		return b.SendMessage(chatID, "Введите дату выходного в формате ГГГГ-ММ-ДД (например 2025-03-15). Назад — отмена.")
-	}
-	if strings.HasPrefix(data, "b_sched_off_del:") {
-		offDate := strings.TrimPrefix(data, "b_sched_off_del:")
-		if err := b.scheduleRepo.RemoveDayOff(ctx, barberID, offDate); err != nil {
-			_ = b.SendMessage(chatID, "Ошибка удаления выходного.")
+	if strings.HasPrefix(data, "b_sched_work_del:") {
+		workDate := strings.TrimPrefix(data, "b_sched_work_del:")
+		if err := b.scheduleRepo.RemoveWorkingDay(ctx, barberID, workDate); err != nil {
+			_ = b.SendMessage(chatID, "Ошибка удаления.")
 			return b.sendBarberMenu(chatID)
 		}
 		return b.barberScheduleEdit(ctx, chatID, cb.Message.MessageID, barberID)
 	}
-	if data == "b_sched_custom_add" {
-		b.barberState.Set(chatID, "schedule_custom_add", "")
-		return b.SendMessage(chatID, "Введите дату для измененного графика (ГГГГ-ММ-ДД, например 2025-03-15). Назад — отмена.")
-	}
-	if strings.HasPrefix(data, "b_sched_custom_del:") {
-		workDate := strings.TrimPrefix(data, "b_sched_custom_del:")
-		if err := b.scheduleRepo.RemoveScheduleOverride(ctx, barberID, workDate); err != nil {
-			_ = b.SendMessage(chatID, "Ошибка удаления измененного графика.")
-			return b.sendBarberMenu(chatID)
-		}
-		return b.barberScheduleEdit(ctx, chatID, cb.Message.MessageID, barberID)
+	if strings.HasPrefix(data, "b_sched_work_edit:") {
+		workDate := strings.TrimPrefix(data, "b_sched_work_edit:")
+		b.barberState.Set(chatID, "schedule_work_edit", workDate)
+		return b.SendMessage(chatID, "Введите новое время начала и окончания (МСК). Например: 11:00 22:00. Назад — отмена.")
 	}
 	if data == "b_address_edit_text" {
 		b.barberState.Set(chatID, "address_edit_text", "")
@@ -647,28 +607,22 @@ func (b *Bot) handleBarberCallback(ctx context.Context, chatID int64, barberID i
 	return b.sendBarberMenu(chatID)
 }
 
-func (b *Bot) barberShowVisits(ctx context.Context, chatID int64, barberID int64, period string) error {
+func (b *Bot) barberShowVisits(ctx context.Context, chatID int64, barberID int64, dateStr string) error {
 	loc := b.cfg.TZ
-	now := time.Now().In(loc)
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	var from, to time.Time
-	switch period {
-	case "day":
-		from, to = today, today.Add(24*time.Hour)
-	case "week":
-		from, to = today, today.AddDate(0, 0, 7)
-	case "month":
-		from, to = today, today.AddDate(0, 1, 0)
-	default:
-		from, to = today, today.Add(24*time.Hour)
+	date, err := time.ParseInLocation("2006-01-02", dateStr, loc)
+	if err != nil {
+		_ = b.SendMessage(chatID, "Неверная дата.")
+		return b.sendBarberMenu(chatID)
 	}
+	from := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
+	to := from.Add(24 * time.Hour)
 	visits, err := b.visitRepo.ListByBarber(ctx, barberID, from.Unix(), to.Unix())
 	if err != nil {
 		_ = b.SendMessage(chatID, "Ошибка загрузки записей.")
 		return b.sendBarberMenu(chatID)
 	}
 	if len(visits) == 0 {
-		_ = b.SendMessage(chatID, "Нет записей за выбранный период.")
+		_ = b.SendMessage(chatID, "Нет записей на "+dateStr+".")
 		return b.sendBarberMenu(chatID)
 	}
 	var lines []string
@@ -698,7 +652,7 @@ func (b *Bot) barberShowVisits(ctx context.Context, chatID int64, barberID int64
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
-		_ = b.SendMessage(chatID, "Нет записей за выбранный период.")
+		_ = b.SendMessage(chatID, "Нет записей на "+dateStr+".")
 		return b.sendBarberMenu(chatID)
 	}
 	// Одна кнопка «Отменить запись» — затем барбер вводит номер визита.
@@ -709,7 +663,7 @@ func (b *Bot) barberShowVisits(ctx context.Context, chatID int64, barberID int64
 			break
 		}
 	}
-	msg := tgbotapi.NewMessage(chatID, "Записи:\n\n"+strings.Join(lines, "\n")+"\n\nИспользуйте кнопки меню ниже для других действий.")
+	msg := tgbotapi.NewMessage(chatID, "Записи на "+dateStr+":\n\n"+strings.Join(lines, "\n")+"\n\nИспользуйте кнопки меню ниже для других действий.")
 	if hasScheduled {
 		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Отменить запись", "b_cancel_ask")),
