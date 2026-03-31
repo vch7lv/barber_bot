@@ -27,8 +27,11 @@ func CancelVisitByBarber(
 		return 0, ErrVisitNotFoundBarber
 	}
 	client, err := clientRepo.GetByID(ctx, v.ClientID)
-	if err != nil || client == nil {
+	if err != nil {
 		return 0, err
+	}
+	if client == nil {
+		return 0, ErrVisitNotFoundBarber
 	}
 	if err := visitRepo.UpdateStatus(ctx, visitID, "cancelled_by_barber"); err != nil {
 		return 0, err

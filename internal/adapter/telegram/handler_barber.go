@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ func visitStatusLabel(status string) string {
 	switch status {
 	case "scheduled":
 		return ""
-	case "cancelled":
+	case "cancelled", "cancelled_by_barber":
 		return "(отменена)"
 	case "completed":
 		return "(выполнена)"
@@ -217,9 +218,9 @@ func (b *Bot) handleBarberStateStep(ctx context.Context, chatID int64, barberID 
 		return nil
 	case "cancel_visit_id":
 		b.barberState.Clear(chatID)
-		visitID, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+		visitID, err := parseVisitIDFromBarberInput(text)
 		if err != nil || visitID <= 0 {
-			_ = b.SendMessage(chatID, "Неверный формат. Введите номер записи (число). Назад — отмена.")
+			_ = b.SendMessage(chatID, "Неверный формат. Введите номер записи (число из строки «визит #N», можно с #). Назад — отмена.")
 			return b.sendBarberMenu(chatID)
 		}
 		return b.barberCancelVisit(ctx, chatID, barberID, visitID)
@@ -695,10 +696,49 @@ func (b *Bot) barberShowVisits(ctx context.Context, chatID int64, barberID int64
 	return b.sendBarberMenu(chatID)
 }
 
+var barberVisitIDLineRE = regexp.MustCompile(`(?i)визит\s*#?\s*(\d+)`)
+
+// parseVisitIDFromBarberInput извлекает id визита: "12", "#12", "визит #12", фрагмент строки списка с «визит #N».
+func parseVisitIDFromBarberInput(text string) (int64, error) {
+	s := strings.TrimSpace(text)
+	if s == "" {
+		return 0, strconv.ErrSyntax
+	}
+	if m := barberVisitIDLineRE.FindStringSubmatch(s); len(m) > 1 {
+		id, err := strconv.ParseInt(m[1], 10, 64)
+		if err == nil && id > 0 {
+			return id, nil
+		}
+	}
+	trim := strings.TrimSpace(strings.TrimPrefix(s, "#"))
+	if id, err := strconv.ParseInt(trim, 10, 64); err == nil && id > 0 {
+		return id, nil
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		id, err := strconv.ParseInt(s[i:j], 10, 64)
+		if err != nil || id <= 0 {
+			return 0, strconv.ErrSyntax
+		}
+		return id, nil
+	}
+	return 0, strconv.ErrSyntax
+}
+
 func (b *Bot) barberCancelVisit(ctx context.Context, chatID int64, barberID int64, visitID int64) error {
 	v, err := b.visitRepo.GetByID(ctx, visitID)
 	if err != nil || v == nil || v.Status != "scheduled" {
 		_ = b.SendMessage(chatID, "Запись не найдена или уже отменена.")
+		return b.sendBarberMenu(chatID)
+	}
+	if v.BarberID != barberID {
+		_ = b.SendMessage(chatID, "Запись не найдена в вашем расписании.")
 		return b.sendBarberMenu(chatID)
 	}
 	svcs, _ := b.visitRepo.GetServicesByVisitID(ctx, visitID)
