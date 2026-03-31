@@ -15,6 +15,8 @@ type VisitWithServices struct {
 }
 
 // MyVisits возвращает предстоящие визиты клиента (status=scheduled) от from до to.
+// В списке только записи, время начала которых ещё не наступило (по unix), без учёта duration_min —
+// иначе при длинной сумме услуг или расхождении с сеткой слотов прошедшие визиты долго оставались в списке.
 // Поиск по telegram_id через JOIN с clients, чтобы «Мои записи» всегда находили визиты этого пользователя (в т.ч. барбер в режиме клиента).
 func MyVisits(ctx context.Context, clientTelegramID int64, fromUnix, toUnix int64, visitRepo port.VisitRepository) ([]VisitWithServices, error) {
 	visits, err := visitRepo.ListByClientTelegramID(ctx, clientTelegramID, fromUnix, toUnix)
@@ -24,8 +26,7 @@ func MyVisits(ctx context.Context, clientTelegramID int64, fromUnix, toUnix int6
 	nowUnix := time.Now().Unix()
 	result := make([]VisitWithServices, 0, len(visits))
 	for _, v := range visits {
-		endUnix := v.StartsAt + int64(v.DurationMin)*60
-		if endUnix <= nowUnix {
+		if v.StartsAt <= nowUnix {
 			continue
 		}
 		svc, err := visitRepo.GetServicesByVisitID(ctx, v.ID)

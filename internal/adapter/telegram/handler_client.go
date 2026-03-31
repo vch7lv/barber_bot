@@ -65,8 +65,8 @@ func (b *Bot) cmdAddress(ctx context.Context, chatID int64) error {
 
 func (b *Bot) cmdMyVisits(ctx context.Context, chatID int64, client *domain.Client) error {
 	now := time.Now()
-	// Захватываем визиты, начавшиеся недавно, чтобы отфильтровать по окончанию в MyVisits.
-	from := now.Add(-7 * 24 * time.Hour).Unix()
+	// Только визиты с временем начала не раньше текущего момента (в unix); прошедшие не запрашиваем из БД.
+	from := now.Unix()
 	to := now.Add(90 * 24 * time.Hour).Unix()
 
 	list, err := usecase.MyVisits(ctx, client.TelegramID, from, to, b.visitRepo)

@@ -19,7 +19,8 @@ type reminderRunner struct {
 	loc            *time.Location
 	log            *slog.Logger
 	lastSentClient map[int64]struct{}
-	lastSentBarber map[int64]struct{}
+	// lastSentBarber: visit_id -> barber telegram_id, которым уже ушло напоминание (повтор только тем, кому не дошло).
+	lastSentBarber map[int64]map[int64]struct{}
 }
 
 func newReminderRunner(bot *Bot, clientHours, barberHours int, loc *time.Location, log *slog.Logger) *reminderRunner {
@@ -30,7 +31,7 @@ func newReminderRunner(bot *Bot, clientHours, barberHours int, loc *time.Locatio
 		loc:            loc,
 		log:            log,
 		lastSentClient: make(map[int64]struct{}),
-		lastSentBarber: make(map[int64]struct{}),
+		lastSentBarber: make(map[int64]map[int64]struct{}),
 	}
 }
 
@@ -88,8 +89,10 @@ func (r *reminderRunner) runBarberReminders(ctx context.Context) error {
 	}
 	for _, item := range items {
 		key := item.Visit.ID
-		if _, ok := r.lastSentBarber[key]; ok {
-			continue
+		sent := r.lastSentBarber[key]
+		if sent == nil {
+			sent = make(map[int64]struct{})
+			r.lastSentBarber[key] = sent
 		}
 		svcText := strings.Join(item.ServiceNames, ", ")
 		if svcText == "" {
@@ -99,18 +102,20 @@ func (r *reminderRunner) runBarberReminders(ctx context.Context) error {
 			"Через %d ч запись: %s, %s (МСК).\nУслуги: %s",
 			r.barberHours, item.ClientName, item.StartsAtLocal.Format("02.01.2006 15:04"), svcText,
 		)
-		allOK := true
+		before := len(sent)
 		for _, tgID := range r.bot.cfg.BarberTelegramIDs {
+			if _, ok := sent[tgID]; ok {
+				continue
+			}
 			if err := r.bot.SendMessage(tgID, text); err != nil {
 				r.log.Error("send barber reminder", "err", err, "visit_id", key, "barber_telegram_id", tgID)
-				allOK = false
+				continue
 			}
+			sent[tgID] = struct{}{}
 		}
-		if !allOK {
-			continue
+		if len(sent) > before {
+			r.log.Info("barber reminder sent", "visit_id", key, "new_recipients", len(sent)-before)
 		}
-		r.lastSentBarber[key] = struct{}{}
-		r.log.Info("barber reminder sent", "visit_id", key)
 	}
 	return nil
 }
