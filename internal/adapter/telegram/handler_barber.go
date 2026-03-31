@@ -332,6 +332,23 @@ func (b *Bot) barberScheduleContent(ctx context.Context, barberID int64) (text s
 	if err != nil {
 		return "", tgbotapi.InlineKeyboardMarkup{}, err
 	}
+	loc := b.cfg.TZ
+	now := time.Now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	var visible []*domain.WorkingDay
+	for _, w := range list {
+		d, err := time.ParseInLocation("2006-01-02", w.WorkDate, loc)
+		if err != nil {
+			continue
+		}
+		dayStart := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
+		if dayStart.Before(today) {
+			continue
+		}
+		visible = append(visible, w)
+	}
+	list = visible
+
 	var lines []string
 	lines = append(lines, "Рабочие дни (между слотами 1 час, МСК):")
 	if len(list) == 0 {
