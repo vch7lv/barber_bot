@@ -388,6 +388,8 @@ func (b *Bot) doBookVisit(ctx context.Context, chatID int64, messageID int, clie
 	}
 	b.state.Set(chatID, nil)
 
+	b.notifyBarbersNewVisit(ctx, v.StartsAt, c.Name, serviceIDs)
+
 	loc := b.cfg.TZ
 	t := time.Unix(v.StartsAt, 0).In(loc)
 	text := fmt.Sprintf("Вы записаны на %s в %s (МСК).", t.Format("02.01.2006"), t.Format("15:04"))
@@ -409,6 +411,37 @@ func (b *Bot) doBookVisit(ctx context.Context, chatID int64, messageID int, clie
 	edit.ReplyMarkup = nil
 	_, _ = b.api.Send(edit) // ошибка "message is not modified" не критична
 	return b.sendMainMenu(chatID)
+}
+
+// notifyBarbersNewVisit шлёт уведомление на все TG-аккаунты барбера из конфига.
+func (b *Bot) notifyBarbersNewVisit(ctx context.Context, startsAt int64, clientName string, serviceIDs []int64) {
+	loc := b.cfg.TZ
+	t := time.Unix(startsAt, 0).In(loc)
+	name := strings.TrimSpace(clientName)
+	if name == "" {
+		name = "без имени"
+	}
+	var lines []string
+	for _, sid := range serviceIDs {
+		s, err := b.serviceRepo.GetByID(ctx, sid)
+		if err != nil || s == nil {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("• %s — %d ₽", s.Name, s.PriceCents/100))
+	}
+	servicesBlock := strings.Join(lines, "\n")
+	if servicesBlock == "" {
+		servicesBlock = "• (услуги не указаны)"
+	}
+	text := fmt.Sprintf(
+		"Новая запись\n\n📅 %s в %s (МСК)\n\nКлиент: %s\n\nУслуги:\n%s",
+		t.Format("02.01.2006"), t.Format("15:04"), name, servicesBlock,
+	)
+	for _, tgID := range b.cfg.BarberTelegramIDs {
+		if err := b.SendMessage(tgID, text); err != nil {
+			b.log.Error("notify barber new visit", "err", err, "barber_telegram_id", tgID)
+		}
+	}
 }
 
 func (b *Bot) doCancelVisit(ctx context.Context, chatID int64, clientID int64, visitID int64) error {
