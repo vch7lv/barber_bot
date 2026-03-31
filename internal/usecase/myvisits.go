@@ -21,8 +21,13 @@ func MyVisits(ctx context.Context, clientTelegramID int64, fromUnix, toUnix int6
 	if err != nil {
 		return nil, err
 	}
+	nowUnix := time.Now().Unix()
 	result := make([]VisitWithServices, 0, len(visits))
 	for _, v := range visits {
+		endUnix := v.StartsAt + int64(v.DurationMin)*60
+		if endUnix <= nowUnix {
+			continue
+		}
 		svc, err := visitRepo.GetServicesByVisitID(ctx, v.ID)
 		if err != nil {
 			return nil, err
@@ -30,10 +35,4 @@ func MyVisits(ctx context.Context, clientTelegramID int64, fromUnix, toUnix int6
 		result = append(result, VisitWithServices{Visit: v, Services: svc})
 	}
 	return result, nil
-}
-
-// UpcomingStartUnix возвращает unix начала «предстоящих» визитов.
-// Небольшой сдвиг назад (2 ч) чтобы не терять записи из-за расхождения времени сервера и часового пояса клиента.
-func UpcomingStartUnix(now time.Time) int64 {
-	return now.Unix() - 2*3600
 }

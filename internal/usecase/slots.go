@@ -78,6 +78,21 @@ func FreeSlots(
 		}
 	}
 
+	now := time.Now().In(loc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	if dayStart.Before(todayStart) {
+		return nil, nil
+	}
+	if dayStart.Equal(todayStart) {
+		var future []time.Time
+		for _, t := range free {
+			if t.After(now) {
+				future = append(future, t)
+			}
+		}
+		free = future
+	}
+
 	if log != nil && len(free) > 0 {
 		log.Debug("free slots", "barber_id", barberID, "date", dateStr, "count", len(free))
 	}

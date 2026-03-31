@@ -65,7 +65,8 @@ func (b *Bot) cmdAddress(ctx context.Context, chatID int64) error {
 
 func (b *Bot) cmdMyVisits(ctx context.Context, chatID int64, client *domain.Client) error {
 	now := time.Now()
-	from := usecase.UpcomingStartUnix(now)
+	// Захватываем визиты, начавшиеся недавно, чтобы отфильтровать по окончанию в MyVisits.
+	from := now.Add(-7 * 24 * time.Hour).Unix()
 	to := now.Add(90 * 24 * time.Hour).Unix()
 
 	list, err := usecase.MyVisits(ctx, client.TelegramID, from, to, b.visitRepo)
@@ -380,6 +381,8 @@ func (b *Bot) doBookVisit(ctx context.Context, chatID int64, messageID int, clie
 		b.state.Set(chatID, nil)
 		if err == usecase.ErrBanned {
 			_ = b.editOrSend(chatID, messageID, "Вы заблокированы.")
+		} else if err == usecase.ErrSlotInPast {
+			_ = b.editOrSend(chatID, messageID, "Это время уже прошло. Выберите другой слот.")
 		} else {
 			b.log.Error("book visit", "err", err)
 			_ = b.editOrSend(chatID, messageID, "Запись не удалась. Возможно слот уже занят — выберите другое время.")

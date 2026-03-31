@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -49,7 +51,11 @@ func NewBot(
 ) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
 	if err != nil {
-		return nil, err
+		msg := strings.TrimSpace(err.Error())
+		if strings.Contains(strings.ToLower(msg), "not found") || strings.Contains(strings.ToLower(msg), "unauthorized") {
+			return nil, fmt.Errorf("telegram: %w (проверьте TELEGRAM_BOT_TOKEN в .env или переменных окружения: токен из @BotFather, без пробелов и кавычек)", err)
+		}
+		return nil, fmt.Errorf("telegram: %w", err)
 	}
 	api.Debug = cfg.LogLevel == "debug"
 
@@ -81,7 +87,7 @@ func NewBot(
 		barberState:      newBarberStateStore(),
 		barberClientMode: newBarberClientModeStore(),
 	}
-	bot.reminderTicker = newReminderRunner(bot, cfg.ReminderBeforeHours, cfg.TZ, log)
+	bot.reminderTicker = newReminderRunner(bot, cfg.ReminderBeforeHours, cfg.BarberReminderBeforeHours, cfg.TZ, log)
 	return bot, nil
 }
 

@@ -12,6 +12,7 @@ import (
 
 var ErrBanned = errors.New("client is banned")
 var ErrNoServices = errors.New("at least one service required")
+var ErrSlotInPast = errors.New("slot is in the past")
 
 // BookVisit создаёт визит: проверяет бан, длительность по услугам, сохраняет визит и связи.
 func BookVisit(
@@ -57,6 +58,9 @@ func BookVisit(
 
 	durationMin := domain.VisitDurationMinutes(services)
 	now := time.Now().Unix()
+	if startUnix <= now {
+		return nil, ErrSlotInPast
+	}
 
 	v := &domain.Visit{
 		ClientID:    clientID,

@@ -18,7 +18,8 @@ type Config struct {
 	TZ                   *time.Location
 	BackupTime           string // HH:MM по МСК
 	BackupDir            string
-	ReminderBeforeHours  int
+	ReminderBeforeHours       int // напоминание клиенту за N часов до визита
+	BarberReminderBeforeHours int // напоминание барберу за N часов до визита (0 — выключено)
 	LogLevel             string
 	BotMode              string
 	WebhookURL           string
@@ -34,7 +35,8 @@ func Load() (*Config, error) {
 		DatabaseDSN:         getEnv("DATABASE_DSN", "file:barber_bot.db?_journal_mode=WAL"),
 		BackupTime:          getEnv("BACKUP_TIME", "22:00"),
 		BackupDir:           getEnv("BACKUP_DIR", "./backups"),
-		ReminderBeforeHours: getEnvInt("REMINDER_BEFORE_HOURS", 2),
+		ReminderBeforeHours:       getEnvInt("REMINDER_BEFORE_HOURS", 2),
+		BarberReminderBeforeHours: getEnvInt("BARBER_REMINDER_BEFORE_HOURS", 1),
 		LogLevel:            getEnv("LOG_LEVEL", "info"),
 		BotMode:             getEnv("BOT_MODE", "polling"),
 		WebhookURL:          os.Getenv("WEBHOOK_URL"),

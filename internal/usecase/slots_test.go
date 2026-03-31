@@ -57,6 +57,28 @@ func (m *mockVisitRepoForSlots) CountByClient(ctx context.Context, clientID int6
 func (m *mockVisitRepoForSlots) Save(ctx context.Context, v *domain.Visit, serviceIDs []int64) error { return nil }
 func (m *mockVisitRepoForSlots) UpdateStatus(ctx context.Context, id int64, status string) error   { return nil }
 
+func TestFreeSlots_PastCalendarDay_ReturnsEmpty(t *testing.T) {
+	ctx := context.Background()
+	loc := time.UTC
+	past := time.Now().In(loc).Add(-48 * time.Hour)
+	date := time.Date(past.Year(), past.Month(), past.Day(), 0, 0, 0, 0, loc)
+	dateStr := date.Format("2006-01-02")
+	sched := &mockScheduleRepo{
+		workingDay: map[string]*domain.WorkingDay{
+			dateStr: {BarberID: 1, WorkDate: dateStr, StartTime: "09:00", EndTime: "18:00"},
+		},
+	}
+	visitRepo := &mockVisitRepoForSlots{}
+	log := slog.Default()
+	slots, err := FreeSlots(ctx, 1, date, 60, loc, sched, visitRepo, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slots) != 0 {
+		t.Errorf("expected 0 slots for past calendar day, got %d", len(slots))
+	}
+}
+
 func TestFreeSlots_NoWorkingDay_ReturnsEmpty(t *testing.T) {
 	ctx := context.Background()
 	loc := time.UTC
@@ -79,10 +101,13 @@ func TestFreeSlots_NoWorkingDay_ReturnsEmpty(t *testing.T) {
 func TestFreeSlots_WorkingDay_ReturnsSlots(t *testing.T) {
 	ctx := context.Background()
 	loc := time.UTC
-	date := time.Date(2025, 3, 16, 0, 0, 0, 0, loc)
+	// Дата в будущем: FreeSlots отбрасывает прошедшие календарные дни и слоты «сегодня» в прошлом.
+	future := time.Now().In(loc).Add(72 * time.Hour)
+	date := time.Date(future.Year(), future.Month(), future.Day(), 0, 0, 0, 0, loc)
+	dateStr := date.Format("2006-01-02")
 	sched := &mockScheduleRepo{
 		workingDay: map[string]*domain.WorkingDay{
-			"2025-03-16": {BarberID: 1, WorkDate: "2025-03-16", StartTime: "11:00", EndTime: "15:00"},
+			dateStr: {BarberID: 1, WorkDate: dateStr, StartTime: "11:00", EndTime: "15:00"},
 		},
 	}
 	visitRepo := &mockVisitRepoForSlots{}
