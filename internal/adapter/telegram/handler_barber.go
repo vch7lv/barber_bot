@@ -440,7 +440,6 @@ func (b *Bot) barberVisitsPeriod(ctx context.Context, chatID int64, barberID int
 	loc := b.cfg.TZ
 	now := time.Now().In(loc)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	fromCut := today.AddDate(0, 0, -7)
 	toCut := today.AddDate(0, 0, 30)
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, w := range workingDays {
@@ -449,7 +448,8 @@ func (b *Bot) barberVisitsPeriod(ctx context.Context, chatID int64, barberID int
 			continue
 		}
 		dayStart := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
-		if dayStart.Before(fromCut) || !dayStart.Before(toCut) {
+		// Только сегодня и будущие дни (прошлые даты в выборе не показываем)
+		if dayStart.Before(today) || !dayStart.Before(toCut) {
 			continue
 		}
 		label := d.Format("02.01")
@@ -463,7 +463,7 @@ func (b *Bot) barberVisitsPeriod(ctx context.Context, chatID int64, barberID int
 		))
 	}
 	if len(rows) == 0 {
-		_ = b.SendMessage(chatID, "Нет рабочих дней в ближайшие 30 дней. Добавьте дни в График.")
+		_ = b.SendMessage(chatID, "Нет рабочих дней с сегодняшнего дня на ближайшие 30 дней. Добавьте дни в График.")
 		return b.sendBarberMenu(chatID)
 	}
 	msg := tgbotapi.NewMessage(chatID, "Выберите рабочий день:")
@@ -613,14 +613,85 @@ func (b *Bot) handleBarberCallback(ctx context.Context, chatID int64, barberID i
 	if data == "b_visits_repick" {
 		return b.barberVisitsPeriod(ctx, chatID, barberID)
 	}
-	if strings.HasPrefix(data, "b_cancel_visit:") {
-		idStr := strings.TrimPrefix(data, "b_cancel_visit:")
+	if strings.HasPrefix(data, "b_cancel_do:") {
+		idStr := strings.TrimPrefix(data, "b_cancel_do:")
 		vid, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil || vid <= 0 {
 			_ = b.SendMessage(chatID, "Некорректная запись.")
 			return b.sendBarberMenu(chatID)
 		}
 		return b.barberCancelVisit(ctx, chatID, barberID, vid)
+	}
+	if strings.HasPrefix(data, "b_cancel_visit:") {
+		rest := strings.TrimPrefix(data, "b_cancel_visit:")
+		var vid int64
+		var dateStr string
+		if i := strings.IndexRune(rest, ':'); i > 0 && i+1 < len(rest) {
+			idPart, datePart := rest[:i], rest[i+1:]
+			if len(datePart) == 10 && datePart[4] == '-' && datePart[7] == '-' {
+				var perr error
+				vid, perr = strconv.ParseInt(idPart, 10, 64)
+				if perr == nil && vid > 0 {
+					dateStr = datePart
+				}
+			}
+		}
+		if vid <= 0 {
+			var perr error
+			vid, perr = strconv.ParseInt(rest, 10, 64)
+			if perr != nil || vid <= 0 {
+				_ = b.SendMessage(chatID, "Некорректная запись.")
+				return b.sendBarberMenu(chatID)
+			}
+		}
+		v, err := b.visitRepo.GetByID(ctx, vid)
+		if err != nil || v == nil || v.Status != "scheduled" || v.BarberID != barberID {
+			_ = b.SendMessage(chatID, "Запись не найдена или уже неактивна.")
+			return b.sendBarberMenu(chatID)
+		}
+		if v.StartsAt <= time.Now().Unix() {
+			_ = b.SendMessage(chatID, "Нельзя отменить запись в прошедшем времени.")
+			return b.sendBarberMenu(chatID)
+		}
+		loc := b.cfg.TZ
+		t := time.Unix(v.StartsAt, 0).In(loc)
+		clientLabel := ""
+		if c, _ := b.clientRepo.GetByID(ctx, v.ClientID); c != nil {
+			if c.Username != "" {
+				clientLabel = "@" + c.Username
+			} else if c.Name != "" {
+				clientLabel = c.Name
+			}
+		}
+		if clientLabel == "" {
+			clientLabel = fmt.Sprintf("клиент id %d", v.ClientID)
+		}
+		svcs, _ := b.visitRepo.GetServicesByVisitID(ctx, vid)
+		svcStr := ""
+		for i, s := range svcs {
+			if i > 0 {
+				svcStr += ", "
+			}
+			svcStr += s.Name
+		}
+		if svcStr == "" {
+			svcStr = "—"
+		}
+		confirmText := fmt.Sprintf("Отменить запись?\n\n📅 %s в %s (МСК)\n%s\nУслуги: %s\n\nКлиент получит уведомление в Telegram.",
+			t.Format("02.01.2006"), t.Format("15:04"), clientLabel, svcStr)
+		backData := "b_visits_repick"
+		if dateStr != "" {
+			backData = "b_visits:" + dateStr
+		}
+		msg := tgbotapi.NewMessage(chatID, confirmText)
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Да, отменить", "b_cancel_do:"+strconv.FormatInt(vid, 10)),
+				tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к списку", backData),
+			),
+		)
+		_, sendErr := b.api.Send(msg)
+		return sendErr
 	}
 	if strings.HasPrefix(data, "b_visits:") {
 		period := strings.TrimPrefix(data, "b_visits:")
@@ -632,7 +703,7 @@ func (b *Bot) handleBarberCallback(ctx context.Context, chatID int64, barberID i
 	}
 	if data == "b_cancel_ask" {
 		b.barberState.Set(chatID, "cancel_visit_id", "")
-		return b.SendMessage(chatID, "Введите номер записи для отмены (визит #N из списка выше). Назад — отмена.")
+		return b.SendMessage(chatID, "Введите номер визита для отмены (как в строке «визит #N»). Удобнее — кнопки у каждой записи в списке. Назад — отмена.")
 	}
 	return b.sendBarberMenu(chatID)
 }
@@ -651,10 +722,27 @@ func (b *Bot) barberShowVisits(ctx context.Context, chatID int64, barberID int64
 		_ = b.SendMessage(chatID, "Ошибка загрузки записей.")
 		return b.sendBarberMenu(chatID)
 	}
-	if len(visits) == 0 {
-		_ = b.SendMessage(chatID, "Нет записей на "+dateStr+".")
-		return b.sendBarberMenu(chatID)
+	nowUnix := time.Now().Unix()
+	var upcoming []*domain.Visit
+	for _, v := range visits {
+		if v.StartsAt > nowUnix {
+			upcoming = append(upcoming, v)
+		}
 	}
+	if len(upcoming) == 0 {
+		emptyText := "Нет записей на " + dateStr + "."
+		if len(visits) > 0 {
+			emptyText = "На " + dateStr + " нет предстоящих записей (прошедшие не показываются)."
+		}
+		msg := tgbotapi.NewMessage(chatID, emptyText)
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("← Другой день", "b_visits_repick")),
+		)
+		_, _ = b.api.Send(msg)
+		return nil
+	}
+	visits = upcoming
+
 	var lines []string
 	for _, v := range visits {
 		t := time.Unix(v.StartsAt, 0).In(loc)
@@ -695,25 +783,26 @@ func (b *Bot) barberShowVisits(ctx context.Context, chatID int64, barberID int64
 			continue
 		}
 		t := time.Unix(v.StartsAt, 0).In(loc)
-		label := fmt.Sprintf("❌ Отменить %s · #%d", t.Format("15:04"), v.ID)
+		label := fmt.Sprintf("🚫 Отменить %s · #%d", t.Format("15:04"), v.ID)
+		cb := "b_cancel_visit:" + strconv.FormatInt(v.ID, 10) + ":" + dateStr
 		inlineRows = append(inlineRows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(label, "b_cancel_visit:"+strconv.FormatInt(v.ID, 10)),
+			tgbotapi.NewInlineKeyboardButtonData(label, cb),
 		))
 	}
 	if len(inlineRows) > 0 {
 		inlineRows = append(inlineRows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✏️ Ввести номер записи", "b_cancel_ask"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Отменить по номеру #…", "b_cancel_ask"),
 		))
 	}
 	inlineRows = append(inlineRows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("← Другой день", "b_visits_repick"),
 	))
 
-	text := "Записи на " + dateStr + ":\n\n" + strings.Join(lines, "\n")
+	text := "Предстоящие записи на " + dateStr + ":\n\n" + strings.Join(lines, "\n")
 	if hasScheduled {
-		text += "\n\nНажмите кнопку у нужной записи, чтобы отменить её и уведомить клиента. Либо введите номер вручную."
+		text += "\n\nСначала подтверждение — затем запись отменится, клиент получит сообщение. Можно также ввести номер визита вручную."
 	} else {
-		text += "\n\nНа этот день нет активных записей (все отменены или выполнены)."
+		text += "\n\nНет активных записей на этот день (остальные уже отменены или выполнены)."
 	}
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(inlineRows...)
