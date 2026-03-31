@@ -181,7 +181,7 @@ func (b *Bot) handleClientCallback(ctx context.Context, chatID int64, client *do
 	if strings.HasPrefix(data, "cancel:") {
 		visitIDStr := strings.TrimPrefix(data, "cancel:")
 		visitID, _ := strconv.ParseInt(visitIDStr, 10, 64)
-		return b.doCancelVisit(ctx, chatID, client.ID, visitID)
+		return b.doCancelVisit(ctx, chatID, client, visitID)
 	}
 
 	return b.sendMainMenu(chatID)
@@ -447,8 +447,31 @@ func (b *Bot) notifyBarbersNewVisit(ctx context.Context, startsAt int64, clientN
 	}
 }
 
-func (b *Bot) doCancelVisit(ctx context.Context, chatID int64, clientID int64, visitID int64) error {
-	err := usecase.CancelVisit(ctx, visitID, clientID, b.visitRepo, b.auditRepo)
+// notifyBarbersVisitCancelled шлёт на все TG-аккаунты барбера: дата/время, клиент, услуги, кто отменил.
+func (b *Bot) notifyBarbersVisitCancelled(ctx context.Context, startsAt int64, clientName string, serviceNames []string, cancelledBy string) {
+	loc := b.cfg.TZ
+	t := time.Unix(startsAt, 0).In(loc)
+	name := strings.TrimSpace(clientName)
+	if name == "" {
+		name = "без имени"
+	}
+	svcBlock := strings.Join(serviceNames, ", ")
+	if svcBlock == "" {
+		svcBlock = "—"
+	}
+	text := fmt.Sprintf(
+		"Запись отменена\n\n📅 %s в %s (МСК)\nКлиент: %s\nУслуги: %s\n\nОтменил: %s",
+		t.Format("02.01.2006"), t.Format("15:04"), name, svcBlock, cancelledBy,
+	)
+	for _, tgID := range b.cfg.BarberTelegramIDs {
+		if err := b.SendMessage(tgID, text); err != nil {
+			b.log.Error("notify barber visit cancelled", "err", err, "barber_telegram_id", tgID)
+		}
+	}
+}
+
+func (b *Bot) doCancelVisit(ctx context.Context, chatID int64, client *domain.Client, visitID int64) error {
+	err := usecase.CancelVisit(ctx, visitID, client.ID, b.visitRepo, b.auditRepo)
 	if err != nil {
 		if err == usecase.ErrNotYourVisit || err == usecase.ErrVisitNotFound {
 			_ = b.SendMessage(chatID, "Запись не найдена или уже отменена.")
@@ -458,6 +481,19 @@ func (b *Bot) doCancelVisit(ctx context.Context, chatID int64, clientID int64, v
 			_ = b.SendMessage(chatID, "Ошибка отмены.")
 		}
 		return b.sendMainMenu(chatID)
+	}
+	v, err := b.visitRepo.GetByID(ctx, visitID)
+	if err == nil && v != nil {
+		svcs, _ := b.visitRepo.GetServicesByVisitID(ctx, visitID)
+		names := make([]string, 0, len(svcs))
+		for _, s := range svcs {
+			names = append(names, s.Name)
+		}
+		cn := strings.TrimSpace(client.Name)
+		if cn == "" {
+			cn = "без имени"
+		}
+		b.notifyBarbersVisitCancelled(ctx, v.StartsAt, client.Name, names, "клиент "+cn)
 	}
 	_ = b.SendMessage(chatID, "Запись отменена.")
 	return b.sendMainMenu(chatID)

@@ -720,6 +720,12 @@ func (b *Bot) barberCancelVisit(ctx context.Context, chatID int64, barberID int6
 		_ = b.SendMessage(chatID, "Запись не найдена или уже отменена.")
 		return b.sendBarberMenu(chatID)
 	}
+	cl, _ := b.clientRepo.GetByID(ctx, v.ClientID)
+	clName := ""
+	if cl != nil {
+		clName = cl.Name
+	}
+	b.notifyBarbersVisitCancelled(ctx, v.StartsAt, clName, svcNames, "барбер")
 	_ = b.SendMessage(clientTGID, clientMsg)
 	_ = b.SendMessage(chatID, "Запись отменена, клиент уведомлён.")
 	return b.sendBarberMenu(chatID)
