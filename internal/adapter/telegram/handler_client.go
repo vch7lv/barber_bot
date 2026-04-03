@@ -242,26 +242,45 @@ func (b *Bot) sendBookingServices(ctx context.Context, chatID int64, caption str
 	return err
 }
 
+// bookingDatesHorizonDays — на сколько дней вперёд показываем рабочие дни из графика барбера (раньше смотрели только 14 дней).
+const bookingDatesHorizonDays = 90
+
 func (b *Bot) sendBookingDates(ctx context.Context, chatID int64, messageID int, serviceIDs []int64) error {
+	if b.firstBarberID == 0 {
+		_ = b.editOrSend(chatID, messageID, "Запись временно недоступна. Обратитесь в салон.")
+		return b.sendMainMenu(chatID)
+	}
 	loc := b.cfg.TZ
 	now := time.Now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	tomorrow := today.AddDate(0, 0, 1)
+	horizonEnd := today.AddDate(0, 0, bookingDatesHorizonDays)
+
+	list, err := b.scheduleRepo.ListWorkingDays(ctx, b.firstBarberID)
+	if err != nil {
+		b.log.Error("sendBookingDates ListWorkingDays", "err", err)
+		_ = b.editOrSend(chatID, messageID, "Не удалось загрузить расписание. Попробуйте позже.")
+		return b.sendMainMenu(chatID)
+	}
+
 	var rows [][]tgbotapi.InlineKeyboardButton
-	for i := 0; i < 14; i++ {
-		d := now.AddDate(0, 0, i)
-		dateStr := d.Format("2006-01-02")
-		wd, err := b.scheduleRepo.GetWorkingDay(ctx, b.firstBarberID, dateStr)
+	for _, w := range list {
+		d, err := time.ParseInLocation("2006-01-02", w.WorkDate, loc)
 		if err != nil {
-			b.log.Error("sendBookingDates GetWorkingDay", "err", err, "date", dateStr)
 			continue
 		}
-		if wd == nil {
+		dayStart := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
+		if dayStart.Before(today) || !dayStart.Before(horizonEnd) {
 			continue
 		}
+		dateStr := w.WorkDate
 		label := d.Format("02.01")
-		if i == 0 {
+		if dayStart.Equal(today) {
 			label = "Сегодня " + d.Format("02.01")
-		} else if i == 1 {
+		} else if dayStart.Equal(tomorrow) {
 			label = "Завтра " + d.Format("02.01")
+		} else {
+			label = d.Format("02.01.2006")
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label, "d:"+dateStr),
@@ -270,12 +289,12 @@ func (b *Bot) sendBookingDates(ctx context.Context, chatID int64, messageID int,
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("← Назад — изменить услуги", "book:back_services")))
 	text := "Выберите дату:"
 	if len(rows) == 0 {
-		_ = b.editOrSend(chatID, messageID, "В ближайшие 14 дней приёма нет. Обратитесь в салон.")
+		_ = b.editOrSend(chatID, messageID, fmt.Sprintf("Нет доступных дней для записи на ближайшие %d дней (по графику барбера). Обратитесь в салон.", bookingDatesHorizonDays))
 		return b.sendMainMenu(chatID)
 	}
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ReplyMarkup = &tgbotapi.InlineKeyboardMarkup{InlineKeyboard: rows}
-	_, err := b.api.Send(edit)
+	_, err = b.api.Send(edit)
 	return b.ignoreMessageNotModified(err)
 }
 
