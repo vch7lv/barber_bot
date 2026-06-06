@@ -7,9 +7,5 @@ services:
       - DATABASE_DSN=file:/app/data/barber_bot.db?_journal_mode=WAL
       - BACKUP_DIR=/app/backups
     volumes:
-      - barber_data:/app/data
-      - barber_backups:/app/backups
-
-volumes:
-  barber_data:
-  barber_backups:
+      - ./data:/app/data
+      - ./backups:/app/backups
